@@ -53,6 +53,7 @@ _CAPTURE_PATTERNS: list[tuple[str, str]] = [
 
 _CF_MARKERS = ("just a moment", "checking your browser")
 _CF_RESOLVE_POLL_S = 30
+_CF_CONFIRM_WAIT_S = 2
 
 
 def _handle_cloudflare_challenge(page: Page) -> bool:
@@ -86,13 +87,20 @@ def _handle_cloudflare_challenge(page: Page) -> bool:
     except Exception as e:
         logger.debug("Could not click Cloudflare checkbox (may auto-solve): %s", e)
 
-    # Poll until the challenge page is gone
+    # Poll until the challenge page is gone.  After the markers first disappear,
+    # wait briefly and re-check: a Cloudflare reload can make the page appear
+    # challenge-free for an instant before the challenge reloads, causing a
+    # false-positive resolution.
     for elapsed in range(_CF_RESOLVE_POLL_S):
         time.sleep(1)
         content = page.content().lower()
         if not any(m in content for m in _CF_MARKERS):
-            logger.info("Cloudflare challenge resolved after %ds", elapsed + 1)
-            return True
+            time.sleep(_CF_CONFIRM_WAIT_S)
+            content = page.content().lower()
+            if not any(m in content for m in _CF_MARKERS):
+                logger.info("Cloudflare challenge resolved after %ds", elapsed + 1)
+                return True
+            logger.debug("Cloudflare challenge reappeared after page reload — continuing to poll")
 
     logger.warning("Cloudflare challenge did not resolve within %ds", _CF_RESOLVE_POLL_S)
     return True
