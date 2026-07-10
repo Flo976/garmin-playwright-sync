@@ -258,8 +258,10 @@ def _make_cf_page(cf_content: bool = False, resolves_after: int | None = None) -
         # Always CF content (timeout scenario)
         page.content.return_value = cf_html
     else:
-        # CF content for initial check + resolves_after polls, then normal
-        side_effects = [cf_html] * (1 + resolves_after) + [normal_html]
+        # CF content for initial check + resolves_after polls, then normal HTML
+        # twice: once when the poll loop first sees non-CF content, and once for
+        # the confirmation check that guards against false-positive reloads.
+        side_effects = [cf_html] * (1 + resolves_after) + [normal_html, normal_html]
         page.content.side_effect = side_effects
 
     # iframe/frame_locator setup: no checkbox found by default
@@ -341,3 +343,26 @@ def test_navigate_calls_cf_handler_after_goto():
         _navigate(page, "https://example.com", result, "daily summary (2026-03-29)")
 
     mock_cf.assert_called_once_with(page)
+
+
+def test_cf_reappears_after_reload_continues_polling():
+    """When CF challenge briefly disappears (page reloading) then reappears,
+    polling must continue rather than exiting with a false-positive resolution."""
+    page = MagicMock()
+    normal_html = "<html><body>Garmin Connect</body></html>"
+    cf_html = "<html><body>just a moment...</body></html>"
+
+    # initial=CF, poll0=normal(disappears), confirm0=CF(reappears), poll1=normal, confirm1=normal
+    page.content.side_effect = [cf_html, normal_html, cf_html, normal_html, normal_html]
+
+    frame_locator = MagicMock()
+    checkbox = MagicMock()
+    checkbox.count.return_value = 0
+    frame_locator.locator.return_value = checkbox
+    page.frame_locator.return_value = frame_locator
+
+    with patch("src.scraper.random.uniform", return_value=1.0), patch("src.scraper.time.sleep"):
+        result = _handle_cloudflare_challenge(page)
+
+    assert result is True
+    assert page.content.call_count == 5
